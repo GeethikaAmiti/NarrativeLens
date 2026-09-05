@@ -27,7 +27,7 @@ def main(input_path: str, output_path: str) -> int:
         model_name = payload["model_name"]
         primary_min = float(payload["primary_min"])
         secondary_min = float(payload["secondary_min"])
-        secondary_ratio = float(payload["secondary_ratio"])
+        secondary_max_gap = float(payload["secondary_max_gap"])
 
         import numpy as np
         import torch
@@ -39,7 +39,15 @@ def main(input_path: str, output_path: str) -> int:
         )
 
         labels = list(prompts_map.keys())
-        prompts = list(prompts_map.values())
+        flat_prompts = []
+        prompt_label_indices = []
+        for label_idx, label in enumerate(labels):
+            variants = prompts_map[label]
+            if isinstance(variants, str):
+                variants = [variants]
+            for prompt in variants:
+                flat_prompts.append(prompt)
+                prompt_label_indices.append(label_idx)
 
         model = CLIPModel.from_pretrained(model_name)
         model.to("cpu")
@@ -67,7 +75,7 @@ def main(input_path: str, output_path: str) -> int:
 
         image_inputs = image_processor(images=images, return_tensors="pt")
         text_inputs = tokenizer(
-            prompts,
+            flat_prompts,
             padding=True,
             truncation=True,
             return_tensors="pt",
@@ -80,10 +88,29 @@ def main(input_path: str, output_path: str) -> int:
                 attention_mask=text_inputs.get("attention_mask"),
             )
 
-        relative = outputs.logits_per_image.softmax(dim=1).cpu().numpy()
+        image_embeds = outputs.image_embeds
+        text_embeds = outputs.text_embeds
+        image_embeds = image_embeds / image_embeds.norm(dim=1, keepdim=True).clamp_min(1e-12)
+        text_embeds = text_embeds / text_embeds.norm(dim=1, keepdim=True).clamp_min(1e-12)
+
+        # Build one robust semantic prototype per user-facing descriptor by
+        # averaging several prompt variants for that class. This is less
+        # brittle than forcing one wording to represent an entire concept.
+        prototypes = []
+        for label_idx in range(len(labels)):
+            indices = [
+                i for i, mapped_idx in enumerate(prompt_label_indices)
+                if mapped_idx == label_idx
+            ]
+            proto = text_embeds[indices].mean(dim=0)
+            proto = proto / proto.norm().clamp_min(1e-12)
+            prototypes.append(proto)
+        prototypes = torch.stack(prototypes, dim=0)
+
+        similarities = (image_embeds @ prototypes.T).cpu().numpy()
         results = {}
 
-        for path, row in zip(valid_paths, relative):
+        for path, row in zip(valid_paths, similarities):
             order = np.argsort(row)[::-1]
             top_i = int(order[0])
             second_i = int(order[1]) if len(order) > 1 else top_i
@@ -92,19 +119,23 @@ def main(input_path: str, output_path: str) -> int:
             second_score = float(row[second_i])
 
             primary_label = labels[top_i]
-            low_separation = top_score < primary_min
+            low_confidence = top_score < primary_min
 
-            if low_separation:
-                primary_label = "General / unclear news scene"
+            if low_confidence:
+                primary_label = "General news scene"
 
             secondary_label = None
             secondary_score = None
 
+            # A second descriptor is shown only when it is independently
+            # plausible and very close to the primary match. The UI never
+            # displays these raw CLIP values as probabilities.
             if (
-                not low_separation
+                not low_confidence
                 and second_score >= secondary_min
-                and second_score >= top_score * secondary_ratio
+                and (top_score - second_score) <= secondary_max_gap
                 and labels[second_i] != primary_label
+                and labels[second_i] != "General news scene"
             ):
                 secondary_label = labels[second_i]
                 secondary_score = round(second_score, 3)
@@ -121,7 +152,7 @@ def main(input_path: str, output_path: str) -> int:
                     }
                     for i in order[:3]
                 ],
-                "low_separation": low_separation,
+                "low_separation": low_confidence,
             }
 
         Path(output_path).write_text(

@@ -9,13 +9,13 @@ Two deliberately separate ML layers are used:
    convergence/divergence only.
 
 2) CLIP zero-shot semantic descriptors
-   image -> comparison against a fixed list of natural-language prompts.
-   This adds an observable-content description (e.g. police/security presence,
-   protest crowd, injury aftermath). It does NOT infer editorial intent, bias,
+   image -> comparison against prompt ensembles for broad, observable news
+   scenes. This adds one clean primary descriptor and, only when useful, one
+   secondary descriptor. It does NOT infer editorial intent, bias,
    manipulation, motive, sentiment, or truth.
 
-CLIP match scores shown to users are RELATIVE matches within the fixed prompt
-set. They are not calibrated probabilities that a label is objectively true.
+Raw CLIP similarity values are used internally for ranking only and are not
+presented to users as probabilities or confidence scores.
 """
 
 from __future__ import annotations
@@ -87,32 +87,239 @@ def extract_image_embeddings(image_paths: List[str]):
 CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
 
 # User-facing label -> natural-language prompt sent to CLIP.
-VISUAL_PROMPTS: Dict[str, str] = {
-    "Protest crowd / demonstration":
-        "a news photograph showing a protest crowd, march, rally, or public demonstration",
-    "Police / security presence":
-        "a news photograph showing police officers, riot police, law enforcement, or security personnel",
-    "Street confrontation / clash":
-        "a news photograph showing an active street confrontation, clash, scuffle, or people physically confronting each other",
-    "Injury / medical aftermath":
-        "a news photograph showing an injured person, medical treatment, an ambulance, or people tending to injuries",
-    "Political leader / official":
-        "a news photograph showing a political leader, minister, government official, or elected representative",
-    "Press conference / statement":
-        "a news photograph showing a press conference, podium, microphones, media briefing, or official statement",
-    "Economic / trade imagery":
-        "a news photograph about trade or the economy showing ports, shipping containers, factories, markets, money, tariffs, or commerce",
-    "Flags / diplomatic imagery":
-        "a news photograph showing national flags, a diplomatic meeting, officials shaking hands, or international diplomacy",
-    "Property damage / destruction":
-        "a news photograph showing damaged property, broken objects, rubble, fire damage, or destruction",
-    "General / unclear news scene":
-        "a general news photograph or street scene without one clearly dominant activity",
+VISUAL_PROMPTS: Dict[str, List[str]] = {
+    # Natural disasters / environment
+    "Flood / high water": [
+        "a news photograph showing floodwater, high water, an overflowing river, or inundated streets",
+        "a news image of buildings, roads, fields, or communities surrounded by flood water",
+        "a disaster photograph showing widespread flooding or a swollen river",
+    ],
+    "Landslide / mudslide": [
+        "a news photograph showing a landslide, mudslide, collapsed slope, or moving earth",
+        "a disaster image showing mud, rocks, or debris flowing down a hillside or valley",
+        "a news photograph of a slope failure or debris-covered road",
+    ],
+    "Glacier / snow": [
+        "a news photograph dominated by a glacier, ice field, snow, or snow-covered mountain terrain",
+        "a news image showing glacier ice, alpine snow, or a high mountain valley",
+        "a photograph of icy or snowy mountain terrain connected to a news event",
+    ],
+    "Wildfire / smoke": [
+        "a news photograph showing wildfire, forest fire, flames, or heavy outdoor smoke",
+        "a disaster image of burning vegetation, wildfire smoke, or fire crews near a blaze",
+        "a news image dominated by flames or smoke from a large fire",
+    ],
+    "Storm / severe weather": [
+        "a news photograph showing a cyclone, hurricane, severe storm, heavy rain, strong winds, or storm damage",
+        "a weather disaster image showing intense rain, wind, waves, or storm conditions",
+        "a news photograph of severe weather affecting buildings, roads, or communities",
+    ],
+    "Earthquake damage": [
+        "a news photograph showing earthquake damage, collapsed masonry, cracked buildings, or seismic destruction",
+        "a disaster image of buildings or structures damaged by an earthquake",
+        "a news photograph of rubble and structural collapse after seismic activity",
+    ],
+    "Damaged infrastructure": [
+        "a news photograph showing damaged homes, buildings, roads, bridges, utilities, or public infrastructure",
+        "a disaster image focused on destroyed or heavily damaged structures",
+        "a news photograph showing broken roads, collapsed buildings, damaged bridges, or ruined property",
+    ],
+    "Rescue operation": [
+        "a news photograph showing rescuers, emergency responders, search teams, rescue boats, or disaster relief workers",
+        "an emergency response image showing people searching for, assisting, or evacuating victims",
+        "a news image focused on rescue or recovery activity after an emergency",
+    ],
+    "Evacuation / displacement": [
+        "a news photograph showing people evacuating, leaving homes, entering shelters, or being displaced",
+        "a news image of displaced families, evacuation centres, or people carrying belongings after an emergency",
+        "a disaster photograph focused on civilians moving to safety",
+    ],
+    "Drought / dry conditions": [
+        "a news photograph showing drought, cracked dry ground, empty reservoirs, dry fields, or severe water shortage",
+        "an environmental news image showing parched land or drought-affected agriculture",
+        "a news photograph focused on unusually dry conditions or water scarcity",
+    ],
+    "Environmental pollution": [
+        "a news photograph showing polluted water, oil spill, industrial pollution, waste, smog, or environmental contamination",
+        "an environmental news image showing visible pollution or contamination",
+        "a news photograph focused on environmental damage caused by waste or pollutants",
+    ],
+
+    # Politics / public affairs
+    "Election / voting": [
+        "a news photograph showing voting, ballots, ballot boxes, polling stations, election officials, or vote counting",
+        "an election news image of voters casting ballots or election materials being counted",
+        "a photograph focused on the voting process or ballot administration",
+    ],
+    "Campaign rally": [
+        "a news photograph showing an election campaign rally, political supporters, campaign signs, or a candidate addressing a crowd",
+        "a political campaign image with a stage, supporters, banners, or election gathering",
+        "a news photograph focused on a candidate campaign event",
+    ],
+    "Political leader": [
+        "a news photograph primarily showing a president, prime minister, minister, elected representative, or political leader",
+        "a political news portrait or appearance by a senior government or party leader",
+        "a news image focused on a politician speaking, meeting, or appearing publicly",
+    ],
+    "Protest / demonstration": [
+        "a news photograph showing protesters, placards, a march, rally, sit-in, strike, or public demonstration",
+        "a news image of people demonstrating in public with signs, banners, or slogans",
+        "a photograph focused on organized public protest activity",
+    ],
+    "Police / security": [
+        "a news photograph showing police officers, riot police, law enforcement, security personnel, barricades, or crowd control",
+        "a news image focused on police or security forces at an event",
+        "a photograph showing law enforcement presence or public-security operations",
+    ],
+    "Diplomatic meeting": [
+        "a news photograph showing leaders or officials in a diplomatic meeting, summit, bilateral talks, or international negotiation",
+        "a foreign affairs image of officials meeting, shaking hands, or seated for formal talks",
+        "a news photograph focused on diplomacy between governments",
+    ],
+    "Government briefing": [
+        "a news photograph showing an official government briefing, podium, microphones, press conference, or formal statement",
+        "a public affairs image of officials speaking to journalists at a briefing",
+        "a news photograph focused on an official announcement or government press event",
+    ],
+    "Court / legal proceedings": [
+        "a news photograph showing a courtroom, judge, lawyers, courthouse, legal hearing, or judicial proceeding",
+        "a legal news image focused on a court building, hearing, or trial",
+        "a photograph connected to litigation, judges, attorneys, or formal legal proceedings",
+    ],
+    "Military / conflict": [
+        "a news photograph showing soldiers, military vehicles, weapons, combat, armed conflict, or a war zone",
+        "a conflict image focused on troops, military equipment, battlefield activity, or armed forces",
+        "a news photograph showing military operations or active conflict",
+    ],
+
+    # People / society
+    "Crowd / public gathering": [
+        "a news photograph showing a large public crowd or gathering without a clearly dominant protest or campaign activity",
+        "a news image of many people gathered at a public place or event",
+        "a photograph focused on a crowd, audience, or public gathering",
+    ],
+    "Medical response": [
+        "a news photograph showing medical workers, ambulances, hospital treatment, emergency care, or injured people receiving help",
+        "a health or emergency image focused on doctors, paramedics, patients, or medical response",
+        "a news photograph showing treatment or emergency medical activity",
+    ],
+    "Mourning / memorial": [
+        "a news photograph showing a memorial, funeral, candles, flowers, mourning relatives, or public remembrance",
+        "a news image focused on grief, remembrance, or a funeral gathering",
+        "a photograph showing people mourning victims or attending a memorial",
+    ],
+    "Refugees / migration": [
+        "a news photograph showing refugees, migrants, border crossings, displacement camps, or people travelling with belongings",
+        "a migration news image focused on displaced people or border movement",
+        "a photograph showing refugees or migrants in transit or temporary shelter",
+    ],
+    "Community scene": [
+        "a news photograph focused on ordinary residents, neighbourhood life, families, or a local community",
+        "a human-interest news image showing people in a community setting",
+        "a photograph of residents or civilians in everyday local surroundings",
+    ],
+    "Education / classroom": [
+        "a news photograph showing students, teachers, classrooms, schools, universities, exams, or educational activity",
+        "an education news image focused on a classroom, campus, students, or learning",
+        "a photograph showing school or university activity",
+    ],
+
+    # Economy / infrastructure / industry
+    "Market / finance": [
+        "a news photograph showing financial markets, trading screens, banks, currency, business executives, or economic activity",
+        "a finance news image focused on markets, money, banking, investment, or corporate economics",
+        "a photograph connected to financial or business activity",
+    ],
+    "Factory / industry": [
+        "a news photograph showing a factory, industrial plant, machinery, manufacturing line, mine, or industrial workers",
+        "an industry news image focused on manufacturing, production, heavy machinery, or an industrial facility",
+        "a photograph showing industrial production or a factory setting",
+    ],
+    "Port / shipping": [
+        "a news photograph showing a port, cargo ship, shipping containers, cranes, freight terminal, or maritime trade",
+        "a trade news image focused on cargo, shipping, docks, or container transport",
+        "a photograph of commercial shipping or port activity",
+    ],
+    "Transport / vehicles": [
+        "a news photograph showing cars, buses, trains, aircraft, airports, roads, railways, or public transport",
+        "a transport news image focused on vehicles or transportation infrastructure",
+        "a photograph showing travel, traffic, trains, planes, or road transport",
+    ],
+    "Construction / development": [
+        "a news photograph showing construction work, cranes, building sites, new roads, bridges, or infrastructure development",
+        "a development news image focused on active construction or major infrastructure projects",
+        "a photograph showing a construction site or infrastructure being built",
+    ],
+    "Agriculture / farming": [
+        "a news photograph showing farms, crops, farmers, livestock, agricultural fields, or harvesting",
+        "an agriculture news image focused on farming, crops, animals, or rural production",
+        "a photograph showing agricultural work or farmland",
+    ],
+
+    # Technology / science / health / sport
+    "Technology / computing": [
+        "a news photograph showing computers, smartphones, servers, semiconductors, robots, software, data centres, or technology products",
+        "a technology news image focused on digital devices, computing hardware, chips, or software systems",
+        "a photograph showing technology products or computing infrastructure",
+    ],
+    "Science / research": [
+        "a news photograph showing scientists, laboratory equipment, experiments, research facilities, microscopes, or scientific fieldwork",
+        "a science news image focused on researchers, experiments, or scientific equipment",
+        "a photograph showing laboratory or research activity",
+    ],
+    "Space / astronomy": [
+        "a news image showing a rocket, spacecraft, satellite, astronaut, planet, telescope image, or space mission",
+        "a space news image focused on astronomy, spacecraft, launch activity, or celestial objects",
+        "a photograph or scientific image connected to space exploration",
+    ],
+    "Health / medicine": [
+        "a news photograph showing doctors, hospitals, medicines, vaccines, medical research, clinics, or public health activity",
+        "a health news image focused on healthcare, medicine, disease response, or clinical work",
+        "a photograph connected to hospitals, healthcare workers, or medical treatment",
+    ],
+    "Sports / competition": [
+        "a news photograph showing athletes, a sports match, race, stadium, court, field, podium, or sporting competition",
+        "a sports news image focused on players, teams, competition, or an athletic event",
+        "a photograph showing active sport or competition",
+    ],
+    "Crime / investigation": [
+        "a news photograph showing a crime scene, investigators, forensic work, police tape, evidence collection, or criminal investigation",
+        "a crime news image focused on investigators or a secured crime scene",
+        "a photograph connected to an active criminal investigation",
+    ],
+
+    # Information-style visuals
+    "Map / infographic": [
+        "a news image mainly showing a map, chart, diagram, infographic, data visualization, or explanatory graphic",
+        "a non-photographic news visual used to explain locations, numbers, trends, or an event",
+        "an informational graphic containing maps, charts, diagrams, or labelled data",
+    ],
+    "Logo / branding": [
+        "a news image mainly showing a company, organization, institution, campaign, or media logo",
+        "a branding image dominated by a logo, emblem, wordmark, or organization name",
+        "a non-photographic visual focused primarily on branding or a logo",
+    ],
+    "Document / text": [
+        "a news image mainly showing a document, legal paper, report page, letter, printed text, or official notice",
+        "a photograph or screenshot focused on written documents or official text",
+        "a news visual dominated by a page, document, statement, or textual material",
+    ],
+    "Interview / media appearance": [
+        "a news photograph showing a person being interviewed, speaking to media, appearing on television, or seated for a formal interview",
+        "a media news image focused on an interview, television appearance, or journalist speaking with a guest",
+        "a photograph of a person in a media interview or broadcast setting",
+    ],
+    "General news scene": [
+        "a general news photograph of a place, street, building, landscape, or people without one clearly dominant activity",
+        "a general-purpose news image where no specific event category is visually dominant",
+        "a neutral news scene that does not strongly match another specific visual category",
+    ],
 }
 
-CLIP_PRIMARY_MIN = 0.16
-CLIP_SECONDARY_MIN = 0.12
-CLIP_SECONDARY_RATIO = 0.62
+
+CLIP_PRIMARY_MIN = 0.18
+CLIP_SECONDARY_MIN = 0.17
+CLIP_SECONDARY_MAX_GAP = 0.025
 
 
 def classify_images_zero_shot(image_paths: List[str]) -> Dict[str, Any]:
@@ -148,7 +355,7 @@ def classify_images_zero_shot(image_paths: List[str]) -> Dict[str, Any]:
         "prompts": VISUAL_PROMPTS,
         "primary_min": CLIP_PRIMARY_MIN,
         "secondary_min": CLIP_SECONDARY_MIN,
-        "secondary_ratio": CLIP_SECONDARY_RATIO,
+        "secondary_max_gap": CLIP_SECONDARY_MAX_GAP,
     }
 
     input_file = None
@@ -430,9 +637,9 @@ def build_visual_summary(result: Dict[str, Any], total_sources: int) -> str:
             )
 
     parts.append(
-        "MobileNetV2 measures visual similarity; CLIP adds observable-content "
-        "descriptors. CLIP match scores are relative to the fixed prompt set, "
-        "and neither layer infers editorial intent, bias, or motive."
+        "MobileNetV2 measures visual similarity; CLIP adds broad observable "
+        "scene descriptors. Neither layer infers editorial intent, bias, motive, "
+        "or truth."
     )
 
     return " ".join(parts)

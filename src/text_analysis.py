@@ -278,6 +278,8 @@ def collect_sentences(articles: List[Dict[str, Any]]) -> List[Tuple[str, str, st
         )
 
         for sentence in split_sentences(article_text):
+            if _NAVIGATION_NOISE.search(sentence):
+                continue
             out.append((sentence, article["source"], article["id"]))
 
     return out
@@ -294,6 +296,13 @@ _ATTRIBUTION_END = re.compile(
 )
 _METADATA_WORDS = re.compile(
     r"\b(?:published|updated|last updated|min read|IST|GMT|UTC)\b",
+    re.I,
+)
+
+_NAVIGATION_NOISE = re.compile(
+    r"^\s*(?:read\s+more|also\s+read|related(?:\s+stories?)?|recommended|"
+    r"more\s+from|see\s+also|subscribe|sign\s+up|click\s+here|follow\s+us|"
+    r"advertisement|watch\s*:|listen\s*:|newsletter)\b",
     re.I,
 )
 
@@ -648,135 +657,428 @@ def build_cluster_description(cluster: Dict[str, Any]) -> str:
 # EVENT BRIEF — "What is going on?"
 # ---------------------------------------------------------------------------
 
-BRIEF_QUERY_FLOOR = 0.10
+BRIEF_QUERY_FLOOR = 0.12
 
-# The brief is deliberately chronological and reader-facing.
-# Each section has:
-# - a semantic description
-# - positive lexical anchors that strongly suggest the sentence belongs there
-# - negative cues that reduce accidental slotting into the wrong section
-#
-# The output remains extractive: every displayed statement is an article
-# sentence, not an LLM-generated summary.
+# The Incident Brief is intentionally generic.  These roles describe the
+# information a reader needs for almost any news event (disaster, election,
+# court ruling, protest, business announcement, conflict, science story, etc.).
+# They are NOT topic labels and do not assume a particular event type.
 BRIEF_SECTIONS: List[Dict[str, Any]] = [
     {
-        "name": "Background",
+        "name": "Event overview",
         "prompt": (
-            "background and origin of the event or movement, who the main "
-            "participants are, where the event is centred, and how the "
-            "movement developed before the main confrontation"
+            "the central current event: what happened, who or what was involved, "
+            "where or when it happened, and the immediate result"
         ),
+        "min_anchor": 0.28,
+        "lead_bonus": 0.18,
+        "max_sentences": 2,
         "positive": re.compile(
-            r"\b(emerged|began|started|formed|founded|movement|youth-led|"
-            r"camped|camping|past month|since|jantar mantar|protest site|"
-            r"student groups?|supporters?|activist|educationist)\b",
-            re.I,
-        ),
-        "negative": re.compile(
-            r"\b(injured|detained|tear gas|batons?|clashed|violent|"
-            r"crackdown|march had not been authorized|continue our protest|"
-            r"will continue|will not march again)\b",
+            r"\b(happened|occurred|announced|declared|won|lost|elected|result|"
+            r"collapsed|struck|hit|launched|signed|approved|rejected|ruled|"
+            r"ordered|attack|flood|earthquake|storm|election|vote|protest|deal|"
+            r"agreement|merger|release|outbreak|fire)\b",
             re.I,
         ),
     },
     {
-        "name": "Demands / grievances",
+        "name": "How it unfolded",
         "prompt": (
-            "the main demands, grievances and reasons behind the protest or "
-            "event, including what participants wanted changed"
+            "how the current event developed, including its direct cause, trigger, "
+            "sequence of actions, decision, dispute, or mechanism"
         ),
+        "min_anchor": 0.23,
+        "lead_bonus": 0.08,
+        "max_sentences": 2,
         "positive": re.compile(
-            r"\b(demand|demanding|resignation|resign|reforms?|examination|"
-            r"exam|paper leaks?|compensation|education minister|seeking|"
-            r"grievance|justice|students? who died|suicide)\b",
-            re.I,
-        ),
-        "negative": re.compile(
-            r"\b(tear gas|batons?|detained|injured|clashed|wangchuk|"
-            r"hunger strike|forcibly moved|hospital)\b",
+            r"\b(because|caused|triggered|led to|prompted|began|"
+            r"started|collapsed|failed|dispute|challeng|alleg|decision|ruling|"
+            r"counted|ballot|investigation found|report found|sequence)\b",
             re.I,
         ),
     },
     {
-        "name": "Catalyst / build-up",
+        "name": "Impact / consequences",
         "prompt": (
-            "a catalyst, turning point or build-up that increased attention "
-            "or momentum before the main incident, such as a hunger strike, "
-            "prominent activist joining, forced removal, arrest, hospitalisation "
-            "or another escalation"
+            "the immediate consequences of the current event: casualties, damage, "
+            "results, disruption, financial or social effects, winners and losers, "
+            "or other concrete outcomes"
         ),
+        "min_anchor": 0.21,
+        "lead_bonus": 0.04,
+        "max_sentences": 2,
         "positive": re.compile(
-            r"\b(wangchuk|hunger strike|joined them|joined the protest|"
-            r"forcibly|forced|removed|taken to hospital|hospitali[sz]ed|"
-            r"momentum|attention|turning point|catalyst|build-up)\b",
-            re.I,
-        ),
-        "negative": re.compile(
-            r"\b(by the end of the day|continued their protest|will not march again)\b",
+            r"\b(killed|died|injur|missing|damage|destroy|affected|disrupt|casualt|"
+            r"evacuat|closed|halted|suspend|result|won|lost|percent|vote|cost|"
+            r"rose|fell|increase|decrease|outage|shortage|impact|consequence)\b",
             re.I,
         ),
     },
     {
-        "name": "The march and confrontation",
+        "name": "Response / actions",
         "prompt": (
-            "the main flashpoint: protesters attempting to march toward "
-            "Parliament and the immediate police or security response, "
-            "including blocking, dispersal, tear gas, batons or clashes"
+            "what authorities, organisations, courts, emergency teams, companies, "
+            "opposition groups, or other actors did in response to the current event"
         ),
+        "min_anchor": 0.19,
+        "lead_bonus": 0.02,
+        "max_sentences": 2,
         "positive": re.compile(
-            r"\b(march to parliament|march toward parliament|marching toward "
-            r"parliament|tried to march|attempted to march|parliament|"
-            r"blocked|disperse|dispersed|tear gas|batons?|clashed|clash|"
-            r"police response|crackdown|paramilitary)\b",
-            re.I,
-        ),
-        "negative": re.compile(
-            r"\b(emerged in may|past month|will continue our protest)\b",
+            r"\b(rescue|search|relief|aid|deploy|evacuat|investigat|respond|announc|"
+            r"ordered|appeal|challeng|filed|lawsuit|court|authorit|government|"
+            r"police|commission|regulator|agency|officials?|statement|rebuild|"
+            r"restore|reopen|negotiat)\b",
             re.I,
         ),
     },
     {
-        "name": "Impact / injuries / detentions",
+        "name": "Aftermath / wider context",
         "prompt": (
-            "the immediate human impact of the incident: injuries to "
-            "protesters or police, detentions, arrests, casualties, medical "
-            "treatment and concrete numbers describing the aftermath"
+            "what happened next, what remains unresolved, and only the most useful "
+            "broader historical, scientific, political, economic, or social context"
         ),
+        "min_anchor": 0.13,
+        "lead_bonus": 0.0,
+        "max_sentences": 2,
         "positive": re.compile(
-            r"\b(injur|wound|hurt|detain|arrest|personnel|casualt|"
-            r"118|70 protesters|nearly 200 injured|police were injured|"
-            r"protesters were injured|by the end of the day)\b",
-            re.I,
-        ),
-        "negative": re.compile(
-            r"\b(emerged|began|past month|demanding the resignation|wangchuk|"
-            r"hunger strike|health had started deteriorating|forcibly moved)\b",
-            re.I,
-        ),
-    },
-    {
-        "name": "Aftermath / what happened next",
-        "prompt": (
-            "what happened after the confrontation: continued sit-in or "
-            "protest, return to the site, future demonstrations, leaders' "
-            "next steps, decisions not to march again, negotiations or "
-            "official follow-up"
-        ),
-        "positive": re.compile(
-            r"\b(continue|continued|will continue|again|next day|tuesday|"
-            r"sit-in|refusing to leave|returned|return to|future protest|"
-            r"nationwide protests?|will not march again|next step|after the "
-            r"crackdown|day after)\b",
-            re.I,
-        ),
-        "negative": re.compile(
-            r"\b(emerged in may|hunger strike began|main demand)\b",
+            r"\b(later|afterward|afterwards|since|ongoing|remain|continues?|expected|"
+            r"next|future|previous|earlier|history|historical|years|decades|context|"
+            r"long-term|wider|background|trend)\b",
             re.I,
         ),
     },
 ]
 
 
+_BRIEF_NOISE = re.compile(
+    r"^\s*(?:read\s+more|also\s+read|related(?:\s+stories?)?|recommended|"
+    r"more\s+from|see\s+also|subscribe|sign\s+up|click\s+here|follow\s+us|"
+    r"advertisement|watch\s*:|listen\s*:|newsletter)\b",
+    re.I,
+)
+_BRIEF_CHROME = re.compile(
+    r"\b(?:cookie policy|privacy policy|terms of use|all rights reserved|"
+    r"download our app|subscribe to our newsletter)\b",
+    re.I,
+)
+_BRIEF_QUOTE_START = re.compile(r'^\s*[“\"\']')
+_BRIEF_FIRST_PERSON = re.compile(r"\b(?:I|we|our|us)\b", re.I)
+
+
+def _brief_records(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Article sentences for the Incident Brief only.
+
+    This intentionally does not change the sentence pool used by consensus or
+    The Lenses.  It simply removes obvious navigation/related-link text and
+    retains sentence position so the event overview can prefer article leads.
+    """
+    records: List[Dict[str, Any]] = []
+
+    for article in articles:
+        body = _remove_leading_article_title(
+            article.get("text", ""),
+            article.get("title", ""),
+        )
+        sentences = split_sentences(body)
+
+        for pos, sentence in enumerate(sentences):
+            cleaned = re.sub(r"\s+", " ", sentence or "").strip()
+            if not cleaned:
+                continue
+            if _BRIEF_NOISE.search(cleaned) or _BRIEF_CHROME.search(cleaned):
+                continue
+            # Navigation headings and scraped link titles are often short and
+            # sentence-like.  Keep short text only when it contains a strong
+            # event verb/number signal.
+            if len(cleaned) < 58 and not re.search(
+                r"\b(?:killed|died|injured|won|lost|announced|ruled|collapsed|"
+                r"struck|voted|arrested|detained|\d{1,4})\b",
+                cleaned,
+                re.I,
+            ):
+                continue
+
+            records.append(
+                {
+                    "sentence": cleaned,
+                    "source": article["source"],
+                    "article_id": article["id"],
+                    "title": article.get("title", ""),
+                    "position": pos,
+                    "published_at": article.get("published_at", ""),
+                }
+            )
+
+    return records
+
+
+def _brief_event_year(articles: List[Dict[str, Any]]) -> int | None:
+    years = []
+    for article in articles:
+        value = article.get("published_at", "")
+        try:
+            years.append(int(str(value)[:4]))
+        except Exception:
+            continue
+    return max(years) if years else None
+
+
+def _historical_penalty(sentence: str, event_year: int | None, section_name: str) -> float:
+    """Keep older-event examples out of current-event sections.
+
+    Older examples are still allowed in the final context section.  This is
+    what prevents a sentence about (say) a 2021 disaster from being presented
+    as the impact of a 2026 disaster.
+    """
+    if section_name == "Aftermath / wider context" or event_year is None:
+        return 0.0
+
+    years = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", sentence)]
+    if any(year <= event_year - 2 for year in years):
+        return 0.60
+
+    if re.search(
+        r"\b(?:years? ago|decades? ago|previously|historically|in an earlier|"
+        r"during the previous|past election|prior event)\b",
+        sentence,
+        re.I,
+    ):
+        return 0.35
+
+    return 0.0
+
+
+def _brief_quality_score(sentence: str) -> float:
+    """Small readability preference; it never changes/paraphrases evidence."""
+    n = len(sentence)
+    score = 0.0
+
+    if 80 <= n <= 300:
+        score += 0.85
+    elif 55 <= n <= 380:
+        score += 0.35
+    else:
+        score -= 0.35
+
+    if re.search(r"\b\d+(?:\.\d+)?%?\b", sentence):
+        score += 0.12
+
+    if _BRIEF_QUOTE_START.search(sentence):
+        score -= 0.35
+    if _BRIEF_FIRST_PERSON.search(sentence):
+        score -= 0.20
+    if _ATTRIBUTION_START.search(sentence):
+        score -= 0.20
+    if _SUBJECTIVE_CUES.search(sentence):
+        score -= 0.45
+    if _METADATA_WORDS.search(sentence):
+        score -= 0.80
+
+    return score
+
+
+def _brief_anchor_vector(
+    query: str,
+    articles: List[Dict[str, Any]],
+    anchor_text: str = "",
+) -> np.ndarray:
+    """Average query/title/consensus evidence into one event-identity vector."""
+    pieces = [query.strip()]
+    if anchor_text:
+        pieces.append(anchor_text.strip())
+    pieces.extend(
+        (article.get("title", "") or "").strip()
+        for article in articles[:6]
+        if (article.get("title", "") or "").strip()
+    )
+    pieces = [p for p in pieces if p]
+
+    vecs = embed(pieces)
+    if len(vecs) == 0:
+        return np.zeros((384,))
+
+    # Give the corroborated anchor (when present) and the user's query extra
+    # weight without letting any one publisher title dominate.
+    weights = []
+    for i, _ in enumerate(pieces):
+        if i == 0:
+            weights.append(1.6)
+        elif anchor_text and i == 1:
+            weights.append(1.8)
+        else:
+            weights.append(1.0)
+
+    mean = np.average(vecs, axis=0, weights=np.asarray(weights))
+    norm = float(np.linalg.norm(mean))
+    return mean / norm if norm else mean
+
+
+def build_event_brief(
+    query: str,
+    articles: List[Dict[str, Any]],
+    max_points: int = 5,
+    anchor_text: str = "",
+) -> Dict[str, Any]:
+    """Build a general-purpose, event-anchored extractive Incident Brief.
+
+    The algorithm deliberately keeps generation out of the loop:
+      1. derive event identity from query + aligned titles + (when available)
+         the strongest corroborated claim;
+      2. score clean article sentences against that event identity;
+      3. separately ask for overview, unfolding/cause, impact, response and
+         aftermath/context;
+      4. reject old-event examples from current-event sections;
+      5. avoid repeated sentences and overusing one source.
+
+    Every displayed sentence remains verbatim article evidence.
+    """
+    records = _brief_records(articles)
+    if not records:
+        return {"points": [], "num_sources": 0, "anchor_text": anchor_text}
+
+    sentences = [record["sentence"] for record in records]
+    vecs = embed(sentences)
+    anchor_vec = _brief_anchor_vector(query, articles, anchor_text)
+    anchor_sims = vecs @ anchor_vec
+
+    role_prompts = [
+        f"For the current news event '{query}', article evidence about {section['prompt']}."
+        for section in BRIEF_SECTIONS[:max_points]
+    ]
+    role_vecs = embed(role_prompts)
+    role_sims = vecs @ role_vecs.T
+
+    event_year = _brief_event_year(articles)
+    selected_points: List[Dict[str, Any]] = []
+    selected_indices: List[int] = []
+    source_use: Dict[str, int] = {}
+
+    for section_idx, section in enumerate(BRIEF_SECTIONS[:max_points]):
+        ranked = []
+
+        # Generic role cues are used only as a guardrail.  When the selected
+        # articles contain clear evidence for a role (rescue/action, damage,
+        # cause, etc.), a generic but merely event-related sentence should not
+        # steal that slot.
+        cue_count = sum(
+            1 for record in records
+            if section["positive"].search(record["sentence"])
+        )
+        prefer_role_cues = section["name"] != "Event overview" and cue_count >= 2
+
+        for i, record in enumerate(records):
+            if i in selected_indices:
+                continue
+
+            sentence = record["sentence"]
+            anchor_sim = float(anchor_sims[i])
+            role_sim = float(role_sims[i, section_idx])
+            has_role_cue = bool(section["positive"].search(sentence))
+
+            # The sentence must still be about this particular event.  A strong
+            # generic role cue can rescue a moderately similar sentence because
+            # the article itself has already passed same-event alignment.
+            if (
+                anchor_sim < section["min_anchor"]
+                and role_sim < 0.38
+                and not (has_role_cue and anchor_sim >= 0.08)
+            ):
+                continue
+
+            quality = _brief_quality_score(sentence)
+            lexical = 0.16 if has_role_cue else 0.0
+            if prefer_role_cues and not has_role_cue:
+                lexical -= 0.38
+            lead = section["lead_bonus"] if record["position"] <= 2 else 0.0
+            history = _historical_penalty(sentence, event_year, section["name"])
+
+            redundancy = 0.0
+            if selected_indices:
+                redundancy = max(float(vecs[i] @ vecs[j]) for j in selected_indices)
+            redundancy_penalty = max(0.0, redundancy - 0.58) * 1.35
+            source_penalty = 0.08 * source_use.get(record["source"], 0)
+
+            score = (
+                0.49 * anchor_sim
+                + 0.34 * role_sim
+                + 0.10 * quality
+                + lexical
+                + lead
+                - history
+                - redundancy_penalty
+                - source_penalty
+            )
+            ranked.append((score, anchor_sim, role_sim, i))
+
+        ranked.sort(reverse=True)
+        if not ranked:
+            continue
+
+        picks = []
+        best_score = ranked[0][0]
+
+        for score, anchor_sim, role_sim, idx in ranked:
+            if picks and score < best_score - 0.16:
+                break
+
+            # A second sentence should add information, not repeat the first.
+            if picks and max(float(vecs[idx] @ vecs[j]) for j in picks) >= 0.76:
+                continue
+
+            # Prefer a second independent source when possible.
+            if picks and records[idx]["source"] == records[picks[0]]["source"]:
+                alternatives = [
+                    item for item in ranked
+                    if item[3] not in picks
+                    and records[item[3]]["source"] != records[picks[0]]["source"]
+                    and item[0] >= score - 0.05
+                ]
+                if alternatives:
+                    continue
+
+            picks.append(idx)
+            if len(picks) >= int(section["max_sentences"]):
+                break
+
+        if not picks:
+            continue
+
+        sources = []
+        for idx in picks:
+            source = records[idx]["source"]
+            if source not in sources:
+                sources.append(source)
+            selected_indices.append(idx)
+            source_use[source] = source_use.get(source, 0) + 1
+
+        joined = " ".join(records[idx]["sentence"] for idx in picks)
+
+        selected_points.append(
+            {
+                "role": section["name"],
+                "sentence": joined,
+                "sources": sources,
+                "source": sources[0] if sources else "Selected report",
+                "article_id": records[picks[0]]["article_id"],
+                "anchor_similarity": round(
+                    float(np.mean([anchor_sims[idx] for idx in picks])), 3
+                ),
+                "role_similarity": round(
+                    float(np.mean([role_sims[idx, section_idx] for idx in picks])), 3
+                ),
+            }
+        )
+
+    return {
+        "points": selected_points,
+        "num_sources": len({record["source"] for record in records}),
+        "anchor_text": anchor_text,
+    }
+
+
+
+
+# Helpers retained unchanged for The Lenses.
 def _article_sentences(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
 
@@ -807,7 +1109,7 @@ _SUBJECTIVE_CUES = re.compile(
 
 
 def _sentence_informativeness(sentence: str) -> float:
-    """Readability/context bonus for selecting incident-brief evidence."""
+    """Readability/context bonus used by the existing Lenses logic."""
     length = len(sentence)
     score = 0.0
 
@@ -830,7 +1132,6 @@ def _sentence_informativeness(sentence: str) -> float:
     if _ATTRIBUTION_START.search(sentence):
         score -= 0.30
 
-    # Prefer factual event description over an outlet's interpretive phrasing.
     if _SUBJECTIVE_CUES.search(sentence):
         score -= 0.75
 
@@ -838,135 +1139,6 @@ def _sentence_informativeness(sentence: str) -> float:
         score -= 1.0
 
     return score
-
-
-def _role_lexical_score(
-    sentence: str,
-    section: Dict[str, Any],
-) -> float:
-    score = 0.0
-
-    if section["positive"].search(sentence):
-        score += 0.44
-
-    if section["negative"].search(sentence):
-        score -= 0.42
-
-    return score
-
-
-def build_event_brief(
-    query: str,
-    articles: List[Dict[str, Any]],
-    max_points: int = 6,
-) -> Dict[str, Any]:
-    """Build a chronological 6-part incident brief from retrieved evidence.
-
-    The system first asks a different question for each section, then combines
-    semantic similarity with role-specific lexical evidence. If any sentences
-    contain strong anchors for a section (e.g. "hunger strike" for Catalyst or
-    "injured/detained" for Impact), those anchored candidates are preferred.
-
-    This is designed to prevent:
-      - a crackdown quote appearing as "Background"
-      - an aftermath sentence appearing as "Escalation"
-      - Wangchuk/hunger-strike context being pushed into generic extra context
-
-    No generative AI API is used.
-    """
-    records = _article_sentences(articles)
-
-    if not records:
-        return {
-            "points": [],
-            "num_sources": 0,
-        }
-
-    sentences = [record["sentence"] for record in records]
-    vecs = embed(sentences)
-
-    query_vec = embed([query])[0]
-    query_sims = vecs @ query_vec
-
-    prompts = [
-        f"For the news event '{query}', article evidence about {section['prompt']}."
-        for section in BRIEF_SECTIONS
-    ]
-    prompt_vecs = embed(prompts)
-    role_sims = vecs @ prompt_vecs.T
-
-    chosen: List[Dict[str, Any]] = []
-    chosen_indices: List[int] = []
-    source_use: Dict[str, int] = {}
-
-    for section_idx, section in enumerate(BRIEF_SECTIONS[:max_points]):
-        anchored_exists = any(
-            section["positive"].search(record["sentence"])
-            for record in records
-        )
-
-        ranked = []
-
-        for i, record in enumerate(records):
-            sentence = record["sentence"]
-            q = float(query_sims[i])
-            role_sim = float(role_sims[i, section_idx])
-            info = _sentence_informativeness(sentence)
-            lexical = _role_lexical_score(sentence, section)
-
-            if q < BRIEF_QUERY_FLOOR and role_sim < 0.16:
-                continue
-
-            # When the article set contains clear lexical evidence for this
-            # section, strongly prefer those candidates.
-            if anchored_exists and not section["positive"].search(sentence):
-                lexical -= 0.32
-
-            redundancy = 0.0
-            if chosen_indices:
-                redundancy = max(
-                    float(vecs[i] @ vecs[j])
-                    for j in chosen_indices
-                )
-
-            redundancy_penalty = max(0.0, redundancy - 0.52) * 1.10
-            source_penalty = 0.07 * source_use.get(record["source"], 0)
-
-            score = (
-                0.48 * role_sim
-                + 0.22 * max(0.0, q)
-                + 0.16 * max(-0.5, min(1.5, info))
-                + lexical
-                - redundancy_penalty
-                - source_penalty
-            )
-
-            ranked.append((score, role_sim, q, i))
-
-        ranked.sort(reverse=True)
-
-        if not ranked:
-            continue
-
-        _, role_sim, q, best_idx = ranked[0]
-        best = records[best_idx]
-
-        chosen.append(
-            {
-                **best,
-                "index": best_idx,
-                "role": section["name"],
-                "role_similarity": round(float(role_sim), 3),
-                "query_similarity": round(float(q), 3),
-            }
-        )
-        chosen_indices.append(best_idx)
-        source_use[best["source"]] = source_use.get(best["source"], 0) + 1
-
-    return {
-        "points": chosen[:max_points],
-        "num_sources": len({record["source"] for record in records}),
-    }
 
 
 # ---------------------------------------------------------------------------

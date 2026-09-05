@@ -624,85 +624,45 @@ def render_core(result):
     points = brief.get("points", [])
 
     if points:
-        point_by_role = {
-            point.get("role", ""): point
-            for point in points
-        }
-
-        groups = [
-            (
-                "Background and build-up",
-                [
-                    "Background",
-                    "Demands / grievances",
-                    "Catalyst / build-up",
-                ],
-            ),
-            (
-                "Flashpoint and impact",
-                [
-                    "The march and confrontation",
-                    "Impact / injuries / detentions",
-                ],
-            ),
-            (
-                "Aftermath",
-                [
-                    "Aftermath / what happened next",
-                ],
-            ),
-        ]
-
         paragraphs = []
 
-        for heading, roles in groups:
-            selected = [
-                point_by_role[role]
-                for role in roles
-                if role in point_by_role
+        for point in points:
+            heading = point.get("role", "Event detail")
+            paragraph_text = _short_core_quote(
+                point.get("sentence", ""),
+                max_chars=620,
+            ).strip()
+
+            raw_sources = point.get("sources") or [
+                point.get("source", "Selected report")
             ]
-
-            if not selected:
-                continue
-
-            paragraph_text = " ".join(
-                _short_core_quote(
-                    point.get("sentence", ""),
-                    max_chars=330,
-                ).strip()
-                for point in selected
-                if point.get("sentence")
-            )
-
             sources = []
-            for point in selected:
-                source = _display_source_name(
-                    point.get("source", "Selected report")
-                )
-                if source not in sources:
-                    sources.append(source)
-
+            for source in raw_sources:
+                label = _display_source_name(source)
+                if label and label not in sources:
+                    sources.append(label)
             source_text = " · ".join(sources)
 
             paragraphs.append(
-                '<div style="margin-top:.82rem;">'
+                '<div style="margin-top:1rem;">'
                 f'<div class="nl-label" style="margin-top:0;color:#315CF4;">'
                 f'{html.escape(heading)}</div>'
-                f'<div style="margin-top:.28rem;color:#25324A;line-height:1.66;'
-                f'font-size:.95rem;">{html.escape(paragraph_text, quote=False)}</div>'
-                f'<div style="margin-top:.32rem;color:#8A95A6;font-size:.70rem;'
+                f'<div style="margin-top:.32rem;color:#25324A;line-height:1.72;'
+                f'font-size:1rem;">{html.escape(paragraph_text, quote=False)}</div>'
+                f'<div style="margin-top:.38rem;color:#8A95A6;font-size:.72rem;'
                 f'font-weight:700;">Evidence: {html.escape(source_text)}</div>'
                 '</div>'
             )
 
         st.markdown(
-            '<div class="nl-card" style="padding:1rem 1.2rem 1.1rem;">'
-            '<div style="font-family:Playfair Display,serif;font-size:1.45rem;'
+            '<div class="nl-card" style="padding:1.15rem 1.35rem 1.35rem;">'
+            '<div style="font-family:Playfair Display,serif;font-size:1.52rem;'
             'font-weight:800;color:#14213D;">Incident brief</div>'
-            '<div style="margin-top:.2rem;color:#6B778C;font-size:.86rem;line-height:1.5;">'
-            'A compact, evidence-grounded account of the selected event coverage.'
+            '<div style="margin-top:.25rem;color:#6B778C;font-size:.88rem;line-height:1.55;">'
+            'An event-anchored extractive brief built only from the selected reports. '
+            'Older examples are kept out of current-event sections and may appear only as context.'
             '</div>'
-            f'<div style="margin-top:.28rem;">{"".join(paragraphs)}</div>'
+            f'<div style="margin-top:.25rem;">{"".join(paragraphs)}</div>'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -1227,25 +1187,20 @@ def render_visual(result):
 
                 info = _semantic_info(visual, source)
                 if info:
-                    primary = info.get("primary_label", "No clear label")
+                    primary = info.get("primary_label", "General news scene")
                     secondary = info.get("secondary_label")
-                    score = info.get("primary_score")
 
                     extra = (
-                        f' Also visible: <b>{secondary}</b>.'
+                        f'<div style="margin-top:.28rem;color:#64748B;font-size:.84rem;">'
+                        f'Also visible: <b>{secondary}</b></div>'
                         if secondary else ""
                     )
-                    score_text = (
-                        f' Content match: <b>{float(score):.0%}</b>.'
-                        if score is not None else ""
-                    )
-
                     st.markdown(
                         f'<div class="nl-card" style="padding:.8rem .9rem;">'
-                        f'<div class="nl-label" style="margin-top:0;">VISIBLE CONTENT</div>'
-                        f'<div style="margin-top:.35rem;line-height:1.55;color:#334155;">'
-                        f'Primary visible scene: <b>{primary}</b>.'
-                        f'{extra}{score_text}</div></div>',
+                        f'<div class="nl-label" style="margin-top:0;">MAIN IMAGE FOCUS</div>'
+                        f'<div style="margin-top:.35rem;line-height:1.55;color:#334155;'
+                        f'font-weight:800;">{primary}</div>'
+                        f'{extra}</div>',
                         unsafe_allow_html=True,
                     )
 

@@ -32,8 +32,24 @@ def run_pipeline(
     end_date: Optional[str] = None,
     image_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # Historical date windows must influence discovery itself.  Filtering only
+    # after retrieval works for recent stories, but Google News may otherwise
+    # return newer retrospective coverage for older events.
+    retrieval_start = None
+    retrieval_end = None
+    if time_mode == "Specific Date" and specific_date:
+        retrieval_start = specific_date
+        retrieval_end = specific_date
+    elif time_mode == "Custom Date Range" and start_date and end_date:
+        retrieval_start = start_date
+        retrieval_end = end_date
+
     try:
-        candidates = news_retrieval.retrieve_candidates(query)
+        candidates = news_retrieval.retrieve_candidates(
+            query,
+            start_date=retrieval_start,
+            end_date=retrieval_end,
+        )
     except Exception as e:
         raise PipelineError(
             "Live news retrieval failed due to a network or parsing error. "
